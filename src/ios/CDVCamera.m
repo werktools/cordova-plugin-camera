@@ -29,6 +29,7 @@
 #import <ImageIO/CGImageDestination.h>
 #import <MobileCoreServices/UTCoreTypes.h>
 #import <objc/message.h>
+#import <Photos/Photos.h>
 
 #ifndef __CORDOVA_4_0_0
     #import <Cordova/NSData+Base64.h>
@@ -351,13 +352,15 @@ static NSString* toBase64(NSData* data) {
     self.hasPendingOperation = NO;
 }
 
-- (NSData*)processImage:(UIImage*)image info:(NSDictionary*)info options:(CDVPictureOptions*)options
+- (void)processImage:(UIImage*)image info:(NSDictionary*)info options:(CDVPictureOptions*)options
+        completionHandler:(void (^)(NSData* data))completion
 {
-    NSData* data = nil;
+    __block NSData* data = nil;
 
     switch (options.encodingType) {
         case EncodingTypePNG:
             data = UIImagePNGRepresentation(image);
+            completion(data);
             break;
         case EncodingTypeJPEG:
         {
@@ -383,15 +386,74 @@ static NSString* toBase64(NSData* data) {
                         [[self locationManager] performSelector:NSSelectorFromString(@"requestWhenInUseAuthorization") withObject:nil afterDelay:0];
                     }
                     [[self locationManager] startUpdatingLocation];
+                    completion(data);
+                    return;
                 }
+
+                if (options.sourceType == UIImagePickerControllerSourceTypePhotoLibrary)  {
+                    NSURL *url = [info objectForKey:UIImagePickerControllerReferenceURL];
+                    PHFetchResult *fetchResult = [PHAsset fetchAssetsWithALAssetURLs:@[url] options:nil];
+                    __block PHAsset *asset = fetchResult.firstObject;
+
+                    self.metadata = [[NSMutableDictionary alloc] init];
+                    self.data = data;
+
+                    [self requestMetadataWithCompletionBlock:asset completion:^(NSDictionary *dict) {
+                        NSMutableData *imageDataWithExif = [NSMutableData data];
+
+                        self.metadata = [[NSMutableDictionary alloc] init];
+                        NSMutableDictionary* EXIFDictionary = [[dict objectForKey:(NSString*)kCGImagePropertyExifDictionary]mutableCopy];
+                        if (EXIFDictionary) {
+                            [self.metadata setObject:EXIFDictionary forKey:(NSString*)kCGImagePropertyExifDictionary];
+                        }
+                        NSMutableDictionary* GPSDictionary = [[dict objectForKey:(NSString*)kCGImagePropertyGPSDictionary]mutableCopy];
+                        if (GPSDictionary) {
+                            [self.metadata setObject:GPSDictionary forKey:(NSString*)kCGImagePropertyGPSDictionary];
+                        }
+
+                        CGImageSourceRef sourceImage = CGImageSourceCreateWithData((__bridge CFDataRef)self.data, NULL);
+                        CFStringRef sourceType = CGImageSourceGetType(sourceImage);
+                        CGImageDestinationRef destinationImage = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)imageDataWithExif, sourceType, 1, NULL);
+                        CGImageDestinationAddImageFromSource(destinationImage, sourceImage, 0, (__bridge CFDictionaryRef)self.metadata);
+                        CGImageDestinationFinalize(destinationImage);
+                        CFRelease(sourceImage);
+                        CFRelease(destinationImage);
+
+                        sourceImage = nil;
+                        destinationImage = nil;
+                        self.metadata = nil;
+
+                        completion(imageDataWithExif);
+                    }];
+
+                    return;
+                }
+
+                completion(data);
             }
-        }
             break;
+        }
         default:
+            completion(data);
             break;
     };
+}
 
-    return data;
+-(void) requestMetadataWithCompletionBlock:(PHAsset*)asset
+                      completion:(void (^)(NSDictionary* res))completion
+{
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        PHContentEditingInputRequestOptions *editOptions = [[PHContentEditingInputRequestOptions alloc]init];
+        editOptions.networkAccessAllowed = YES;
+
+        [asset requestContentEditingInputWithOptions:editOptions completionHandler:
+         ^(PHContentEditingInput *contentEditingInput, NSDictionary *info) {
+            CIImage *image = [CIImage imageWithContentsOfURL:contentEditingInput.fullSizeImageURL];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(image.properties);
+            });
+        }];
+    });
 }
 
 - (NSString*)tempFilePath:(NSString*)extension
@@ -436,9 +498,9 @@ static NSString* toBase64(NSData* data) {
     return (scaledImage == nil ? image : scaledImage);
 }
 
-- (void)resultForImage:(CDVPictureOptions*)options info:(NSDictionary*)info completion:(void (^)(CDVPluginResult* res))completion
+- (void)resultForImage:(CDVPictureOptions*)options info:(NSDictionary*)info completionHandler:(void (^)(CDVPluginResult* res))completion
 {
-    CDVPluginResult* result = nil;
+    __block CDVPluginResult* result = nil;
     BOOL saveToPhotoAlbum = options.saveToPhotoAlbum;
     UIImage* image = nil;
 
@@ -467,36 +529,37 @@ static NSString* toBase64(NSData* data) {
                 NSString* nativeUri = [[self urlTransformer:url] absoluteString];
                 result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:nativeUri];
             }
-        }
             break;
+        }
         case DestinationTypeFileUri:
         {
             image = [self retrieveImage:info options:options];
-            NSData* data = [self processImage:image info:info options:options];
-            if (data) {
-
+            [self processImage:image info:info options:options completionHandler:^(NSData *data) {
                 NSString* extension = options.encodingType == EncodingTypePNG? @"png" : @"jpg";
                 NSString* filePath = [self tempFilePath:extension];
                 NSError* err = nil;
 
-                // save file
                 if (![data writeToFile:filePath options:NSAtomicWrite error:&err]) {
                     result = [CDVPluginResult resultWithStatus:CDVCommandStatus_IO_EXCEPTION messageAsString:[err localizedDescription]];
                 } else {
                     result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:[[self urlTransformer:[NSURL fileURLWithPath:filePath]] absoluteString]];
                 }
-            }
-        }
+                completion(result);
+
+                extension = nil;
+                filePath = nil;
+            }];
             break;
+        }
         case DestinationTypeDataUrl:
         {
             image = [self retrieveImage:info options:options];
-            NSData* data = [self processImage:image info:info options:options];
-            if (data)  {
+            [self processImage:image info:info options:options completionHandler:^(NSData *data) {
                 result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:toBase64(data)];
-            }
-        }
+                completion(result);
+            }];
             break;
+        }
         default:
             break;
     };
@@ -505,8 +568,6 @@ static NSString* toBase64(NSData* data) {
         ALAssetsLibrary* library = [ALAssetsLibrary new];
         [library writeImageToSavedPhotosAlbum:image.CGImage orientation:(ALAssetOrientation)(image.imageOrientation) completionBlock:nil];
     }
-
-    completion(result);
 }
 
 - (CDVPluginResult*)resultForVideo:(NSDictionary*)info
@@ -525,7 +586,7 @@ static NSString* toBase64(NSData* data) {
 
         NSString* mediaType = [info objectForKey:UIImagePickerControllerMediaType];
         if ([mediaType isEqualToString:(NSString*)kUTTypeImage]) {
-            [weakSelf resultForImage:cameraPicker.pictureOptions info:info completion:^(CDVPluginResult* res) {
+            [weakSelf resultForImage:cameraPicker.pictureOptions info:info completionHandler:^(CDVPluginResult* res) {
                 if (![self usesGeolocation] || picker.sourceType != UIImagePickerControllerSourceTypeCamera) {
                     [weakSelf.commandDelegate sendPluginResult:res callbackId:cameraPicker.callbackId];
                     weakSelf.hasPendingOperation = NO;
