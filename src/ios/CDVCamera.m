@@ -506,29 +506,30 @@ static NSString* toBase64(NSData* data) {
         case DestinationTypeDataUrl:
         {
             image = [self retrieveImage:info options:options];
-            NSData* data = [self processImage:image info:info options:options];
-            if (data)  {
+            [self processImage:image info:info options:options completionHandler:^(NSData *data) {
                 result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:toBase64(data)];
-            }
+                completion(result);
+            }];
+            break;
         }
             break;
         default: // DestinationTypeFileUri
         {
             image = [self retrieveImage:info options:options];
-            NSData* data = [self processImage:image info:info options:options];
-            if (data) {
-
+            [self processImage:image info:info options:options completionHandler:^(NSData *data) {
                 NSString* extension = options.encodingType == EncodingTypePNG? @"png" : @"jpg";
                 NSString* filePath = [self tempFilePath:extension];
                 NSError* err = nil;
 
-                // save file
                 if (![data writeToFile:filePath options:NSAtomicWrite error:&err]) {
                     result = [CDVPluginResult resultWithStatus:CDVCommandStatus_IO_EXCEPTION messageAsString:[err localizedDescription]];
                 } else {
                     result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:[[self urlTransformer:[NSURL fileURLWithPath:filePath]] absoluteString]];
                 }
-            }
+                completion(result);
+                extension = nil;
+                filePath = nil;
+            }];
         }
             break;
     };
