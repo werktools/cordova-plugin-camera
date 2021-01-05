@@ -465,7 +465,7 @@ static NSString* toBase64(NSData* data) {
     NSNumber *timeStampObj = [NSNumber numberWithDouble: timeStamp];
     NSString* filePath = [NSString stringWithFormat:@"%@/%@%ld.%@", docsPath, CDV_PHOTO_PREFIX, [timeStampObj longValue], extension];
 
-    return filePath
+    return filePath;
 }
 
 - (UIImage*)retrieveImage:(NSDictionary*)info options:(CDVPictureOptions*)options
