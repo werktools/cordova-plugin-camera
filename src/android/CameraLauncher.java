@@ -287,7 +287,11 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
     public void takePicture(int returnType, int encodingType)
     {
         // Save the number of images currently on disk for later
-        this.numPics = queryImgDB(whichContentStore()).getCount();
+        Cursor cursor = queryImgDB(whichContentStore());
+        if (cursor != null) {
+            this.numPics = cursor.getCount();
+            cursor.close();
+        }
 
         // Let's use the intent and see what happens
         Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
@@ -1225,21 +1229,25 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
         int diff = 1;
         Uri contentStore = whichContentStore();
         Cursor cursor = queryImgDB(contentStore);
-        int currentNumOfImages = cursor.getCount();
+        //int currentNumOfImages = cursor.getCount();
+        if (cursor != null) {
+            int currentNumOfImages = cursor.getCount();
 
-        if (type == FILE_URI && this.saveToPhotoAlbum) {
-            diff = 2;
-        }
-
-        // delete the duplicate file if the difference is 2 for file URI or 1 for Data URL
-        if ((currentNumOfImages - numPics) == diff) {
-            cursor.moveToLast();
-            int id = Integer.valueOf(cursor.getString(cursor.getColumnIndex(MediaStore.Images.Media._ID)));
-            if (diff == 2) {
-                id--;
+            if (type == FILE_URI && this.saveToPhotoAlbum) {
+                diff = 2;
             }
-            Uri uri = Uri.parse(contentStore + "/" + id);
-            this.cordova.getActivity().getContentResolver().delete(uri, null, null);
+
+            // delete the duplicate file if the difference is 2 for file URI or 1 for Data URL
+            if ((currentNumOfImages - numPics) == diff) {
+                cursor.moveToLast();
+                int id = Integer.valueOf(cursor.getString(cursor.getColumnIndex(MediaStore.Images.Media._ID)));
+                if (diff == 2) {
+                    id--;
+                }
+                Uri uri = Uri.parse(contentStore + "/" + id);
+                this.cordova.getActivity().getContentResolver().delete(uri, null, null);
+            }
+
             cursor.close();
         }
     }
